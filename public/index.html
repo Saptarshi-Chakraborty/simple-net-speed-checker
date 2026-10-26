@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>High-Speed Cloudflare Speed Test</title>
+		<style>
+			body {
+				font-family: system-ui, sans-serif;
+				text-align: center;
+				margin-top: 50px;
+				background: #0f172a;
+				color: #f8fafc;
+			}
+			button {
+				padding: 12px 24px;
+				font-size: 16px;
+				background: #38bdf8;
+				color: #0f172a;
+				border: none;
+				border-radius: 8px;
+				cursor: pointer;
+				font-weight: bold;
+			}
+			button:hover {
+				background: #0ea5e9;
+			}
+			#results {
+				margin-top: 20px;
+				font-size: 18px;
+				line-height: 1.6;
+				font-family: monospace;
+			}
+		</style>
+		<link rel="stylesheet" href="/style.css" />
+	</head>
+	<body>
+		<div class="container">
+			<h1>High-Speed CF Worker Speed Test</h1>
+			<button onclick="runSpeedTest()">Start Speed Test</button>
+			<div id="results">Click start to begin...</div>
+
+			<script>
+				// Replace with your deployed Cloudflare Worker URL
+				const WORKER_URL = '';
+
+				async function measureDownload(sizeMB) {
+					const startTime = performance.now();
+					const response = await fetch(`${WORKER_URL}/download?size=${sizeMB}`);
+					const reader = response.body.getReader();
+					let receivedLength = 0;
+
+					while (true) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						receivedLength += value.length;
+					}
+
+					const durationSec = (performance.now() - startTime) / 1000;
+					const speedMbps = (receivedLength * 8) / (durationSec * 1024 * 1024);
+					return { speedMbps, durationSec, receivedLength };
+				}
+
+				async function measureUpload(sizeMB) {
+					const totalBytes = sizeMB * 1024 * 1024;
+					// Create in chunks or use a controlled typed array layout to prevent memory choke
+					const uploadData = new Uint8Array(totalBytes);
+					uploadData.fill(1);
+
+					const startTime = performance.now();
+					await fetch(`${WORKER_URL}/upload`, {
+						method: 'POST',
+						body: uploadData,
+					});
+					const durationSec = (performance.now() - startTime) / 1000;
+					const speedMbps = (totalBytes * 8) / (durationSec * 1024 * 1024);
+					return speedMbps;
+				}
+
+				async function runSpeedTest() {
+					const resEl = document.getElementById('results');
+					resEl.innerText = 'Measuring Ping...';
+
+					// 1. Ping Test
+					const startPing = performance.now();
+					await fetch(`${WORKER_URL}/ping`);
+					const ping = (performance.now() - startPing).toFixed(2);
+
+					resEl.innerText = `Ping: ${ping} ms\nRunning initial download probe...`;
+
+					// 2. Initial Download Probe (Small size: 10MB)
+					let downloadResult = await measureDownload(10);
+
+					// ADAPTIVE SCALING: If connection is fast (> 100 Mbps), scale up to 50MB.
+					// If it's ultra-fast (> 500 Mbps), scale up to 100MB for accuracy.
+					let targetDownloadSize = 10;
+					if (downloadResult.speedMbps > 500) {
+						targetDownloadSize = 100;
+					} else if (downloadResult.speedMbps > 100) {
+						targetDownloadSize = 40;
+					}
+
+					if (targetDownloadSize > 10) {
+						resEl.innerText = `Ping: ${ping} ms\nHigh speed detected (~${downloadResult.speedMbps.toFixed(0)} Mbps). Scaled test to ${targetDownloadSize}MB...`;
+						downloadResult = await measureDownload(targetDownloadSize);
+					}
+
+					const finalDownloadSpeed = downloadResult.speedMbps.toFixed(2);
+					resEl.innerText = `Ping: ${ping} ms\nDownload: ${finalDownloadSpeed} Mbps\nRunning upload test...`;
+
+					// 3. Adaptive Upload Test (Start safe at 10MB, scale to 25MB if fast)
+					let targetUploadSize = downloadResult.speedMbps > 300 ? 25 : 10;
+					const finalUploadSpeed = (await measureUpload(targetUploadSize)).toFixed(2);
+
+					resEl.innerHTML = `
+                <strong>Test Complete!</strong><br>
+                📡 Ping: <b>${ping} ms</b><br>
+                📥 Download: <b>${finalDownloadSpeed} Mbps</b><br>
+                📤 Upload: <b>${finalUploadSpeed} Mbps</b>
+            `;
+				}
+			</script>
+		</div>
+	</body>
+</html>
